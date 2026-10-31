@@ -1,0 +1,17 @@
+{
+  "_설명": "텔레그램 봇에게 '도움말'을 보내면 명령어로 바꿀 수 있습니다. courses: 이름 일부(빈 리스트면 전체). dates: 특정 날짜. weekdays: days_ahead일 안에서 감시할 요일.",
+  "courses": [
+    "클럽72",
+    "신라",
+    "파주"
+  ],
+  "dates": [],
+  "weekdays": [
+    "토",
+    "일"
+  ],
+  "days_ahead": 21,
+  "min_teams": 1,
+  "interval_minutes": 10,
+  "paused": false
+}
