@@ -1,6 +1,6 @@
-"""원더클럽(onetheclub.com) 빈자리 알림.
+"""원더클럽(onetheclub.com) + 마에스트로CC(maestrocc.co.kr) 빈자리 알림.
 
-메인 화면에 공개된 '골프장별 잔여 팀 수'를 주기적으로 확인하고,
+각 사이트 메인 화면에 공개된 '골프장별 잔여 팀 수'를 주기적으로 확인하고,
 마감이던 곳에 자리가 생기거나 팀 수가 늘면 텔레그램으로 알려줍니다.
 예약 자체는 하지 않습니다. 알림을 받으면 링크를 눌러 직접 예약하세요.
 
@@ -40,6 +40,8 @@ ALL_COURSES = [
     "신라CC", "파주CC", "듄스", "제주아덴힐", "해피니스CC", "해피니스CC(회원제)",
     "하이원CC", "세이지우드 홍천", "세이지우드 여수", "파인힐스", "사우스스프링스", "크리스밸리",
 ]
+MAESTRO_COURSES = ["마에스트로CC 레이크", "마에스트로CC 밸리"]
+ALL_COURSES += MAESTRO_COURSES
 
 ITEM_RE = re.compile(
     r'<li class="(result_\w+)">\s*<a href="([^"]+)">\s*'
@@ -55,14 +57,14 @@ opener.addheaders = [
 ]
 
 
-def fetch(url, data=None):
+def fetch(url, data=None, encoding="utf-8"):
     body = urllib.parse.urlencode(data).encode() if data is not None else None
     req = urllib.request.Request(url, data=body)
     if body is not None:
         req.add_header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
         req.add_header("X-Requested-With", "XMLHttpRequest")
     with opener.open(req, timeout=20) as res:
-        return res.read().decode("utf-8", "replace")
+        return res.read().decode(encoding, "replace")
 
 
 def today():
@@ -99,6 +101,28 @@ def check_date(day):
     return result
 
 
+MAESTRO = "https://www.maestrocc.co.kr"
+MAESTRO_RE = re.compile(r"mainDivCalendrShow\(\d+,\s*'([\d-]+)','([^']*)',\s*'([^']*)'")
+
+
+def check_maestro():
+    """마에스트로CC 메인 달력(예약 가능한 3주 전체)을 한 번에 읽어
+    {날짜: {골프장 이름: (잔여 팀 수, 예약 링크)}}를 돌려줍니다."""
+    page = fetch(
+        MAESTRO + "/GolfRes/mainpage/main_calendar_line_ajax_view.asp",
+        {"golfrestype": "real", "schDate": "", "usrmemcd": "90", "toDay": "", "calnum": "1"},
+        encoding="cp949",
+    )
+    link = MAESTRO + "/pagesite/reservation/live.asp"
+    result = {}
+    for iso, names, teams in MAESTRO_RE.findall(page):
+        day = result.setdefault(dt.date.fromisoformat(iso), {})
+        for name, n in zip(names.split("|"), teams.split("|")):
+            course = "마에스트로CC " + name.replace("코스", "")
+            day[course] = (int(n) if n.isdigit() else 0, link)
+    return result
+
+
 def target_dates(cfg):
     base = today()
     days = {dt.date.fromisoformat(d) for d in cfg.get("dates", [])}
@@ -122,13 +146,20 @@ def day_label(day):
 def scan(cfg):
     """감시 대상 날짜·골프장을 조회해서 [(날짜, 이름, 팀 수, 링크)]를 돌려줍니다."""
     fetch(BASE + "/")  # 세션 쿠키 받기
+    maestro = {}
+    if any(course_wanted(c, cfg) for c in MAESTRO_COURSES):
+        try:
+            maestro = check_maestro()
+        except Exception as e:
+            print(f"마에스트로CC 조회 실패: {e}")
     rows = []
     for day in target_dates(cfg):
         try:
             courses = check_date(day)
         except Exception as e:
             print(f"{day_label(day)} 조회 실패: {e}")
-            continue
+            courses = {}
+        courses.update(maestro.get(day, {}))
         for name, (teams, link) in courses.items():
             if course_wanted(name, cfg):
                 rows.append((day, name, teams, link))
