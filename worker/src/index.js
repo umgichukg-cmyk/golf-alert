@@ -27,7 +27,13 @@ const DEFAULT_CONFIG = {
   days_ahead: 21,
   min_teams: 1,
   paused: false,
+  lakewood_days: 20, // 레이크우드 예약 오픈: 일반회원 20일 전, Privilege 25일 전 (0이면 끔)
 };
+
+// 레이크우드CC는 매크로 차단 솔루션이 있어 사이트를 조회하지 않고,
+// 예약 규칙(내장일 N일 전 10:00 오픈)만으로 오픈 시각을 알려줍니다.
+const LAKEWOOD_LINK = "https://lakewood.co.kr/reservation/golf";
+const LAKEWOOD_NOTIFY = { hour: 9, minuteFrom: 50, minuteTo: 54 }; // 오픈 10분 전
 
 // ---------------------------------------------------------------- 날짜 (한국 시간)
 
@@ -54,6 +60,15 @@ function targetDates(cfg) {
     .sort()
     .slice(0, MAX_DATES)
     .map((s) => new Date(s + "T00:00:00Z"));
+}
+
+// 오늘 10:00에 예약이 열리는 레이크우드 내장일 중, 감시 요일·날짜에 해당하면 돌려줍니다.
+function lakewoodOpeningToday(cfg) {
+  const days = Number(cfg.lakewood_days) || 0;
+  if (!days) return null;
+  const playDay = addDays(todayKST(), days);
+  const wanted = (cfg.weekdays || []).includes(weekdayKo(playDay)) || (cfg.dates || []).includes(iso(playDay));
+  return wanted ? playDay : null;
 }
 
 const courseWanted = (name, cfg) => !cfg.courses?.length || cfg.courses.some((k) => name.includes(k));
@@ -196,6 +211,7 @@ const HELP = `⛳ 골프 빈자리 알림 명령어
 날짜 11/15 11/22 — 특정 날짜 추가 ('없음'으로 비우기)
 기간 21 — 앞으로 며칠까지 볼지
 기준 3 — 몇 팀 이상일 때만 알릴지
+레이크우드 20 — 예약 오픈 알림 (일반 20 / Privilege 25 / 끄기)
 중지 / 재개 — 알림 잠시 멈추기 / 다시 켜기`;
 
 function formatConfig(cfg) {
@@ -205,6 +221,7 @@ function formatConfig(cfg) {
     `요일: ${cfg.weekdays?.join(" ") || "없음"} (앞으로 ${cfg.days_ahead}일)`,
     `특정 날짜: ${cfg.dates?.join(", ") || "없음"}`,
     `알림 기준: ${cfg.min_teams || 1}팀 이상`,
+    `레이크우드 오픈 알림: ${cfg.lakewood_days ? `내장 ${cfg.lakewood_days}일 전 10:00 (9:50에 알림)` : "꺼짐"}`,
     `상태: ${cfg.paused ? "⏸ 중지됨" : "▶ 감시 중 (5분 간격)"}`,
   ].join("\n");
 }
@@ -264,6 +281,20 @@ function handleCommand(cfg, text) {
     }
     return ok();
   }
+  if (cmd === "레이크우드") {
+    if (args[0] === "끄기" || args[0] === "0") cfg.lakewood_days = 0;
+    else if (args[0] === "일반") cfg.lakewood_days = 20;
+    else if (/^privilege$|^프리빌리지$/i.test(args[0] || "")) cfg.lakewood_days = 25;
+    else if (/^\d+$/.test(args[0] || "")) cfg.lakewood_days = Math.max(1, Math.min(Number(args[0]), 60));
+    else return { reply: "예) 레이크우드 20 (일반회원)  /  레이크우드 25 (Privilege)  /  레이크우드 끄기" };
+    const next = [...Array(cfg.lakewood_days ? 14 : 0).keys()]
+      .map((i) => addDays(todayKST(), i))
+      .map((open) => ({ open, play: addDays(open, cfg.lakewood_days) }))
+      .filter(({ play }) => (cfg.weekdays || []).includes(weekdayKo(play)) || (cfg.dates || []).includes(iso(play)))
+      .slice(0, 4)
+      .map(({ open, play }) => `  ${dayLabel(play)} 내장 → ${dayLabel(open)} 10:00 오픈`);
+    return { reply: formatConfig(cfg) + (next.length ? "\n\n다가오는 레이크우드 오픈\n" + next.join("\n") : ""), changed: true };
+  }
   if (cmd === "기간" || cmd === "기준") {
     if (!/^\d+$/.test(args[0] || "")) return { reply: `예) ${cmd} ${cmd === "기간" ? "21" : "3"}` };
     const n = Number(args[0]);
@@ -301,8 +332,27 @@ async function runCheck(env, { forceStatus = false } = {}) {
   return `${rows.length} rows, ${found.length} alerts, ${errors.length} errors`;
 }
 
+async function lakewoodReminder(env, when) {
+  const kst = new Date(when + 9 * 3600 * 1000);
+  const h = kst.getUTCHours();
+  const m = kst.getUTCMinutes();
+  if (h !== LAKEWOOD_NOTIFY.hour || m < LAKEWOOD_NOTIFY.minuteFrom || m > LAKEWOOD_NOTIFY.minuteTo) return;
+  const cfg = await loadConfig(env);
+  if (cfg.paused) return;
+  const play = lakewoodOpeningToday(cfg);
+  if (!play) return;
+  const key = "lakewood_sent";
+  if ((await env.GOLF.get(key)) === iso(play)) return; // 하루 한 번만
+  await env.GOLF.put(key, iso(play));
+  await sendTelegram(
+    env,
+    `⏰ 레이크우드 ${dayLabel(play)} 예약이 오늘 10:00에 열립니다 (내장 ${cfg.lakewood_days}일 전)\n${LAKEWOOD_LINK}`,
+  );
+}
+
 export default {
   async scheduled(event, env, ctx) {
+    await lakewoodReminder(env, event.scheduledTime ?? Date.now());
     console.log(await runCheck(env));
   },
 
