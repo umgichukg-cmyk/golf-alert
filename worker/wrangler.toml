@@ -1,0 +1,15 @@
+name = "golf-alert"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[triggers]
+crons = ["*/5 * * * *"]  # 5분마다
+
+[observability]
+enabled = true
+
+[[kv_namespaces]]
+binding = "GOLF"
+id = "923207b6c4e54cb4ac5cb1fb94be60bd"
+
+# 비밀값(wrangler secret put): TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, WEBHOOK_SECRET
